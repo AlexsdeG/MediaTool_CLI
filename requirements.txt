@@ -1,0 +1,6 @@
+console-menu
+pytube
+requests
+tqdm
+ffmpeg-python
+beautifulsoup4
