@@ -191,6 +191,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - [BeautifulSoup](https://www.crummy.com/software/BeautifulSoup/) for HTML parsing
 - [Requests](https://requests.readthedocs.io/) for HTTP handling
 - [TQDM](https://github.com/tqdm/tqdm) for progress bars
+- **`Claude Sonnet 4`** 20% human / 80% machine
 
 ---
 
