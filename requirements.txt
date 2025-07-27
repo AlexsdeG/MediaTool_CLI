@@ -1,5 +1,6 @@
 console-menu
 pytube
+yt-dlp
 requests
 tqdm
 ffmpeg-python

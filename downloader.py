@@ -49,38 +49,8 @@ def download_direct_url(url: str, output_path: Path, headers=None):
     except requests.exceptions.RequestException as e:
         print(f"❌ Error downloading direct URL: {e}")
 
-def download_youtube(url: str, output_path: Path):
-    """Downloads a YouTube video with a progress bar."""
-    try:
-        yt = YouTube(url)
-        stream = yt.streams.get_highest_resolution()
 
-        if not stream:
-            print("❌ No high resolution stream found.")
-            return
-
-        safe_filename = utils.sanitize_filename(stream.default_filename)
-        print(f"Downloading YouTube video: {yt.title}")
-        
-        # Using TQDM for progress
-        with tqdm(
-            total=stream.filesize, 
-            unit='B', 
-            unit_scale=True, 
-            unit_divisor=1024,
-            desc=safe_filename
-        ) as pbar:
-            def on_progress(chunk, file_handler, bytes_remaining):
-                pbar.update(stream.filesize - bytes_remaining - pbar.n)
-
-            yt.register_on_progress_callback(on_progress)
-            stream.download(output_path=str(output_path), filename=safe_filename)
-
-        print(f"✅ YouTube download complete: {output_path / safe_filename}")
-
-    except Exception as e:
-        print(f"❌ Error downloading YouTube video: {e}")
-
+### HLS Stream Downloading
 def download_hls_stream(m3u8_url: str, output_path: Path, title: str = None, referer: str = None):
     """Downloads HLS stream using ffmpeg with proper headers."""
     try:
@@ -470,3 +440,202 @@ def handle_download(url: str, download_path: Path):
         # Assume it might be a page with an iframe or video content
         print("URL is not a direct media link or YouTube. Attempting to find video content...")
         download_from_iframe(url, download_path)
+        
+        
+### Youtube
+
+def download_youtube(url: str, output_path: Path):
+    """Downloads a YouTube video with a progress bar."""
+    try:
+        print("Attempting to download YouTube video...")
+        
+        # Try different approaches for YouTube download
+        try:
+            # First attempt with default settings
+            yt = YouTube(url)
+            print(f"Video Title: {yt.title}")
+            print(f"Video Length: {yt.length} seconds")
+            
+        except Exception as e:
+            print(f"First attempt failed: {e}")
+            print("Trying with different user agent...")
+            
+            # Try with custom user agent and other options
+            try:
+                yt = YouTube(
+                    url,
+                    use_oauth=False,
+                    allow_oauth_cache=False
+                )
+                print(f"Video Title: {yt.title}")
+                print(f"Video Length: {yt.length} seconds")
+                
+            except Exception as e2:
+                print(f"Second attempt failed: {e2}")
+                print("YouTube download failed. This might be due to:")
+                print("1. Age-restricted content")
+                print("2. Private/unavailable video")
+                print("3. Regional restrictions")
+                print("4. YouTube API changes")
+                print("\nTrying alternative method with yt-dlp...")
+                
+                # Fallback to yt-dlp if available
+                return download_youtube_ytdlp(url, output_path)
+
+        # Get available streams
+        print("Getting available streams...")
+        streams = yt.streams.filter(progressive=True, file_extension='mp4')
+        
+        if not streams:
+            print("No progressive MP4 streams found. Trying adaptive streams...")
+            # Try adaptive streams (video + audio separate)
+            video_streams = yt.streams.filter(adaptive=True, file_extension='mp4', type='video')
+            audio_streams = yt.streams.filter(adaptive=True, file_extension='mp4', type='audio')
+            
+            if video_streams and audio_streams:
+                print("Found adaptive streams. Will download video and audio separately then merge.")
+                return download_youtube_adaptive(yt, output_path, video_streams, audio_streams)
+            else:
+                # Try any available stream
+                streams = yt.streams.filter(file_extension='mp4')
+                if not streams:
+                    streams = yt.streams
+        
+        if not streams:
+            print("❌ No downloadable streams found.")
+            return
+
+        # Select the best quality stream
+        stream = streams.get_highest_resolution()
+        if not stream:
+            stream = streams.first()
+            
+        print(f"Selected stream: {stream.resolution or 'audio'} - {stream.mime_type}")
+
+        safe_filename = utils.sanitize_filename(f"{yt.title}.{stream.subtype}")
+        print(f"Downloading: {safe_filename}")
+        
+        # Download with progress bar
+        if hasattr(stream, 'filesize') and stream.filesize:
+            # Using TQDM for progress if filesize is known
+            with tqdm(
+                total=stream.filesize, 
+                unit='B', 
+                unit_scale=True, 
+                unit_divisor=1024,
+                desc=safe_filename[:50]
+            ) as pbar:
+                def on_progress(chunk, file_handler, bytes_remaining):
+                    pbar.update(stream.filesize - bytes_remaining - pbar.n)
+
+                yt.register_on_progress_callback(on_progress)
+                stream.download(output_path=str(output_path), filename=safe_filename)
+        else:
+            # Simple download without progress bar
+            print("Downloading... (progress not available)")
+            stream.download(output_path=str(output_path), filename=safe_filename)
+
+        print(f"✅ YouTube download complete: {output_path / safe_filename}")
+
+    except Exception as e:
+        print(f"❌ Error downloading YouTube video: {e}")
+        print("Trying alternative method with yt-dlp...")
+        download_youtube_ytdlp(url, output_path)
+
+def download_youtube_adaptive(yt, output_path: Path, video_streams, audio_streams):
+    """Downloads YouTube video using adaptive streams (separate video and audio)."""
+    try:
+        # Select best video and audio streams
+        video_stream = video_streams.get_highest_resolution()
+        audio_stream = audio_streams.get_audio_only()
+        
+        if not video_stream or not audio_stream:
+            print("❌ Could not find suitable video or audio streams")
+            return
+            
+        print(f"Video stream: {video_stream.resolution} - {video_stream.mime_type}")
+        print(f"Audio stream: {audio_stream.abr} - {audio_stream.mime_type}")
+        
+        # Create temporary directory for separate files
+        temp_dir = utils.DATA_DIR / 'temp'
+        temp_dir.mkdir(exist_ok=True)
+        
+        import time
+        temp_download_dir = temp_dir / f"youtube_download_{int(time.time())}"
+        temp_download_dir.mkdir(exist_ok=True)
+        
+        try:
+            # Download video and audio separately
+            print("Downloading video stream...")
+            video_file = temp_download_dir / f"video.{video_stream.subtype}"
+            video_stream.download(output_path=str(temp_download_dir), filename=f"video.{video_stream.subtype}")
+            
+            print("Downloading audio stream...")
+            audio_file = temp_download_dir / f"audio.{audio_stream.subtype}"
+            audio_stream.download(output_path=str(temp_download_dir), filename=f"audio.{audio_stream.subtype}")
+            
+            # Merge using ffmpeg
+            safe_filename = utils.sanitize_filename(f"{yt.title}.mp4")
+            output_file = output_path / safe_filename
+            
+            print("Merging video and audio...")
+            merge_cmd = [
+                'ffmpeg',
+                '-i', str(video_file),
+                '-i', str(audio_file),
+                '-c', 'copy',
+                '-y',
+                str(output_file)
+            ]
+            
+            result = subprocess.run(merge_cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                print(f"✅ YouTube download complete (adaptive): {output_file}")
+            else:
+                print(f"❌ Error merging streams: {result.stderr}")
+                
+        finally:
+            # Clean up temporary files
+            try:
+                shutil.rmtree(temp_download_dir)
+            except Exception as e:
+                print(f"Warning: Could not clean up temporary files: {e}")
+                
+    except Exception as e:
+        print(f"❌ Error in adaptive YouTube download: {e}")
+
+def download_youtube_ytdlp(url: str, output_path: Path):
+    """Fallback method using yt-dlp if available."""
+    try:
+        print("Attempting download with yt-dlp...")
+        
+        # Check if yt-dlp is available
+        result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("❌ yt-dlp not found. Please install it with: pip install yt-dlp")
+            print("Or download from: https://github.com/yt-dlp/yt-dlp")
+            return
+            
+        # Use yt-dlp to download
+        ytdlp_cmd = [
+            'yt-dlp',
+            '--format', 'best[height<=720]',  # Limit to 720p for reliability
+            '--output', str(output_path / '%(title)s.%(ext)s'),
+            '--no-playlist',
+            url
+        ]
+        
+        print("Running yt-dlp...")
+        result = subprocess.run(ytdlp_cmd, capture_output=True, text=True)
+        
+        if result.returncode == 0:
+            print("✅ YouTube download complete (yt-dlp)")
+            print(result.stdout)
+        else:
+            print(f"❌ yt-dlp error: {result.stderr}")
+            
+    except FileNotFoundError:
+        print("❌ yt-dlp not found. Please install it with: pip install yt-dlp")
+    except Exception as e:
+        print(f"❌ Error with yt-dlp download: {e}")
